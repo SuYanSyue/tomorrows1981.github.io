@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>即時溫度顯示設備</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body {
+            margin: 0;
+            font-family: Arial, sans-serif;
+        }
+
+        .container {
+            width: 100%;
+            font-family: Arial, sans-serif;
+        }
+
+        .chart-container {
+            position: relative;
+            height: 600px;
+            width: 100%;
+        }
+
+        #dataLog {
+            font-family: "Trebuchet MS", Arial, Helvetica, sans-serif;
+            border-collapse: collapse;
+            width: 100%;
+        }
+
+        #dataLog td, #dataLog th {
+            border: 1px solid #ddd;
+            padding: 8px;
+        }
+
+        #dataLog tr:nth-child(even) {
+            background-color: #f2f2f2;
+        }
+
+        #dataLog tr:hover {
+            background-color: #ddd;
+        }
+
+        #dataLog th:nth-child(2) {
+            background-color: green;
+            color: white;
+        }
+
+        #dataLog th:nth-child(3) {
+            background-color: red;
+            color: white;
+        }
+
+        #dataLog th:nth-child(4) {
+            background-color: blue;
+            color: white;
+        }
+
+        label, select, button, input {
+            margin: 5px 0;
+            display: inline-block;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <button id="connectButton">連線</button>&nbsp;
+        <button id="disconnectButton" disabled>停止</button>&nbsp;&nbsp;
+        <label for="baudRate">&nbsp;Baud Rate: &nbsp; </label>
+        <select id="baudRate">
+            <option value="9600">9600</option>
+            <option value="115200" selected>115200</option>
+        </select>&nbsp;
+		<label for="updateFrequency">更新頻率(秒):</label>
+        <input type="number" id="updateFrequency" min="2" value="2" step="1">
+        <button id="setFrequencyButton">設定頻率</button>
+		&nbsp;&nbsp;&nbsp;&nbsp;
+		<b>新北市立中山國中數理資優班 溫度展示設備</b>&nbsp;&nbsp;&nbsp;&nbsp;
+		<button id="startTimerButton">開始計時</button>&nbsp;
+        <button id="stopTimerButton">停止計時</button>
+        
+    </div>
+    <div class="chart-container">
+        <canvas id="chart" width="600" height="400"></canvas>
+    </div>
+
+    <table id="dataLog">
+        <thead>
+            <tr>
+                <th>時間戳記</th>
+                <th>秒數</th>
+                <th>T1 (&deg;C)</th>
+                <th>T2 (&deg;C)</th>
+            </tr>
+        </thead>
+        <tbody></tbody>
+    </table>
+
+    <script>
+        const connectButton = document.getElementById('connectButton');
+        const disconnectButton = document.getElementById('disconnectButton');
+        const baudRateSelect = document.getElementById('baudRate');
+        const setFrequencyButton = document.getElementById('setFrequencyButton');
+        const startTimerButton = document.getElementById('startTimerButton');
+        const stopTimerButton = document.getElementById('stopTimerButton');
+        const updateFrequencyInput = document.getElementById('updateFrequency');
+        const chartCtx = document.getElementById('chart').getContext('2d');
+        const dataLog = document.querySelector('#dataLog tbody');
+
+        let port, reader, writer, inputBuffer = '';
+        let keepReading = false;
+        let logging = false;
+
+        const dataX = [];
+        const dataY1 = [];
+        const dataY2 = [];
+        var flag = 0;
+        var n = 0;
+
+        const chart = new Chart(chartCtx, {
+            type: 'line',
+            data: {
+                labels: dataX,
+                datasets: [
+                    {
+                        label: 'T1',
+                        data: dataY1,
+                        borderColor: 'rgba(255, 0, 0, 1)',
+                        fill: false
+                    },
+                    {
+                        label: 'T2',
+                        data: dataY2,
+                        borderColor: 'rgba(0, 0, 255, 1)',
+                        fill: false
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    x: {
+                        title: {
+                            display: true,
+                            text: '時間(秒)'
+                        }
+                    },
+                    y: {
+                        title: {
+                            display: true,
+                            text: '溫度'
+                        }
+                    }
+                }
+            }
+        });
+
+        async function readSerialData() {
+            const textDecoder = new TextDecoderStream();
+            const readableStreamClosed = port.readable.pipeTo(textDecoder.writable);
+            reader = textDecoder.readable.getReader();
+
+            try {
+                while (keepReading) {
+                    const { value, done } = await reader.read();
+                    if (done) {
+                        break;
+                    }
+                    inputBuffer += value;
+                    const lines = inputBuffer.split('\n');
+                    inputBuffer = lines.pop(); // Save any incomplete line
+                    lines.forEach(processSerialData);
+                }
+            } catch (error) {
+                console.error('Error reading from serial port:', error);
+            } finally {
+                reader.releaseLock();
+            }
+        }
+
+        async function sendSerialData(data) {
+            if (writer) {
+                const encoder = new TextEncoder();
+                await writer.write(encoder.encode(data + '\n'));
+            }
+        }
+
+        function processSerialData(line) {
+            const [d1, d2, d3] = line.trim().split(',').map(Number);
+            if (isNaN(d1) || isNaN(d2) || isNaN(d3)) return;
+            const stamp = new Date().toLocaleTimeString();
+            if (flag === 0) { n = d1; }
+
+            dataX.push(d1 - n);
+            dataY1.push(d2);
+            dataY2.push(d3);
+
+            chart.update();
+
+            const row = document.createElement('tr');
+            row.innerHTML = `<td>${stamp}</td><td>${d1 - n}</td><td>${d2}</td><td>${d3}</td>`;
+            dataLog.insertBefore(row, dataLog.firstChild);
+            flag++;
+        }
+
+        connectButton.addEventListener('click', async () => {
+            try {
+                port = await navigator.serial.requestPort();
+                const baudRate = parseInt(baudRateSelect.value, 10);
+                await port.open({ baudRate });
+
+                writer = port.writable.getWriter();
+                keepReading = true;
+                logging = true;
+                readSerialData();
+
+                connectButton.disabled = true;
+                disconnectButton.disabled = false;
+            } catch (error) {
+                console.error('Error connecting to serial port:', error);
+            }
+        });
+
+        disconnectButton.addEventListener('click', async () => {
+            keepReading = false;
+            logging = false;
+            if (reader) {
+                await reader.cancel();
+            }
+            if (writer) {
+                writer.releaseLock();
+            }
+            await port.close();
+
+            connectButton.disabled = false;
+            disconnectButton.disabled = true;
+        });
+
+        setFrequencyButton.addEventListener('click', async () => {
+            const frequency = parseInt(updateFrequencyInput.value, 10);
+            if (!isNaN(frequency) && frequency > 0) {
+                await sendSerialData(`SET_FREQ:${frequency}`);
+            } else {
+                alert('請輸入有效的頻率 (正整數)。');
+            }
+        });
+
+        startTimerButton.addEventListener('click', async () => {
+            await sendSerialData('b');
+        });
+
+        stopTimerButton.addEventListener('click', async () => {
+            await sendSerialData('s');
+        });
+    </script>
+</body>
+</html>
